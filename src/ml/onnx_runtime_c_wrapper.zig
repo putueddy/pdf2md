@@ -200,11 +200,13 @@ pub const Value = struct {
     }
 
     pub fn getTensorData(self: *Value, allocator: std.mem.Allocator) ![]f32 {
-        _ = allocator;
         var count: i64 = 0;
         const data = ort_get_tensor_data(self.value, &count);
         if (data == null) return error.RunFailed;
-        return data[0..@intCast(count)];
+        const len: usize = @intCast(count);
+        const out = try allocator.alloc(f32, len);
+        @memcpy(out, data[0..len]);
+        return out;
     }
 };
 

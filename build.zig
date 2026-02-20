@@ -10,12 +10,17 @@ pub fn build(b: *std.Build) void {
     const onnx_include = b.pathJoin(&.{ onnx_path, "include" });
     const onnx_lib = b.pathJoin(&.{ onnx_path, "lib" });
 
-    // Main executable
-    const exe = b.addExecutable(.{
-        .name = "pdf2md",
+    // Create the main module
+    const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/pdf2md.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    // Main executable
+    const exe = b.addExecutable(.{
+        .name = "pdf2md",
+        .root_module = exe_mod,
     });
 
     // Add C wrapper object file
@@ -30,7 +35,6 @@ pub fn build(b: *std.Build) void {
 
     // System libraries for PDF processing
     exe.linkSystemLibrary("poppler-glib");
-    exe.linkSystemLibrary("gobject-2.0");
 
     b.installArtifact(exe);
 
@@ -46,10 +50,13 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Tests
-    const unit_tests = b.addTest(.{
+    const test_mod = b.createModule(.{
         .root_source_file = b.path("src/pdf2md.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const unit_tests = b.addTest(.{
+        .root_module = test_mod,
     });
     unit_tests.addObjectFile(ort_wrapper_o);
     unit_tests.addIncludePath(.{ .cwd_relative = onnx_include });
@@ -62,20 +69,23 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
 
     // PDF Pipeline test executable
-    const pdf_test_exe = b.addExecutable(.{
-        .name = "test-pdf-pipeline",
+    const pdf_test_mod = b.createModule(.{
         .root_source_file = b.path("scripts/test-pdf-pipeline.zig"),
         .target = target,
         .optimize = optimize,
     });
-    pdf_test_exe.addObjectFile(ort_wrapper_o);
-    pdf_test_exe.addIncludePath(.{ .cwd_relative = onnx_include });
-    pdf_test_exe.addLibraryPath(.{ .cwd_relative = onnx_lib });
-    pdf_test_exe.linkSystemLibrary("onnxruntime");
-    pdf_test_exe.linkLibC();
-    b.installArtifact(pdf_test_exe);
+    const pdf_test_compile = b.addExecutable(.{
+        .name = "test-pdf-pipeline",
+        .root_module = pdf_test_mod,
+    });
+    pdf_test_compile.addObjectFile(ort_wrapper_o);
+    pdf_test_compile.addIncludePath(.{ .cwd_relative = onnx_include });
+    pdf_test_compile.addLibraryPath(.{ .cwd_relative = onnx_lib });
+    pdf_test_compile.linkSystemLibrary("onnxruntime");
+    pdf_test_compile.linkLibC();
+    b.installArtifact(pdf_test_compile);
 
-    const pdf_test_run = b.addRunArtifact(pdf_test_exe);
+    const pdf_test_run = b.addRunArtifact(pdf_test_compile);
     pdf_test_run.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         pdf_test_run.addArgs(args);
@@ -84,11 +94,14 @@ pub fn build(b: *std.Build) void {
     pdf_test_step.dependOn(&pdf_test_run.step);
 
     // Model validator executable
-    const validate_exe = b.addExecutable(.{
-        .name = "validate-model",
+    const validate_mod = b.createModule(.{
         .root_source_file = b.path("scripts/validate-model.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const validate_exe = b.addExecutable(.{
+        .name = "validate-model",
+        .root_module = validate_mod,
     });
     validate_exe.addObjectFile(ort_wrapper_o);
     validate_exe.addIncludePath(.{ .cwd_relative = onnx_include });
@@ -108,9 +121,12 @@ pub fn build(b: *std.Build) void {
         "echo",
         "Build Configuration:",
         "",
-        "ONNX Runtime Path: " ++ onnx_path,
-        "Include: " ++ onnx_include,
-        "Lib: " ++ onnx_lib,
+        "ONNX Runtime Path:",
+        onnx_path,
+        "Include:",
+        onnx_include,
+        "Lib:",
+        onnx_lib,
         "",
         "To use custom ONNX Runtime (e.g., with CoreML):",
         "  zig build -Donnx-path=/path/to/onnxruntime",

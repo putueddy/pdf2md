@@ -3,16 +3,7 @@
     .version = "0.1.0",
     .fingerprint = 0x757c546504f576fd,
     .minimum_zig_version = "0.13.0",
-    .dependencies = .{
-        .zml = .{
-            .url = "https://github.com/zml/zml/archive/refs/heads/main.tar.gz",
-            .hash = "12200000000000000000000000000000000000000000000000000000000000000000",
-        },
-        .zigimg = .{
-            .url = "https://github.com/zigimg/zigimg/archive/refs/heads/main.tar.gz",
-            .hash = "12200000000000000000000000000000000000000000000000000000000000000000",
-        },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",

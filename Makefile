@@ -20,7 +20,8 @@ help:
 	@echo "  make quantize           - Quantize models to INT8 (4x smaller)"
 	@echo "  make test               - Run tests"
 	@echo "  make run FILE=x         - Run with file"
-	@echo "  make model              - Download AI model"
+	@echo "  make model              - Download Nougat AI model"
+	@echo "  make paddleocr          - Download PaddleOCR models (10x smaller)"
 	@echo "  make clean              - Clean build artifacts"
 	@echo "  make install            - Install binary to /usr/local/bin"
 	@echo "  make check              - Check code formatting"
@@ -84,6 +85,9 @@ run: build
 
 model:
 	./scripts/download-model.sh
+
+paddleocr:
+	./scripts/download-paddleocr.sh
 
 quantize:
 	@echo "Quantizing ONNX models to INT8..."

@@ -45,10 +45,14 @@
 src/
 ├── pdf2md.zig                  # Entry point, CLI parsing, orchestration
 ├── ml/
-│   ├── nougat_engine.zig       # Main inference engine
+│   ├── nougat_engine.zig       # Nougat inference engine (seq2seq)
 │   │   ├── Encoder session management
 │   │   ├── Decoder autoregressive generation
 │   │   └── Token accumulation
+│   ├── paddleocr_engine.zig    # PaddleOCR via RapidOCR Python pipeline
+│   │   ├── Calls rapidocr_onnxruntime
+│   │   ├── Uses det/rec ONNX models + dict
+│   │   └── Returns line-level OCR text
 │   ├── onnx_runtime_c_wrapper.zig  # Zig bindings for ONNX C API
 │   │   ├── Environment initialization
 │   │   ├── Session management
@@ -102,14 +106,14 @@ src/
    └── Create tensor [1, 3, 896, 672]
    │
    ▼
-6. ONNX Inference (nougat_engine.zig)
+6. OCR Inference
    │
-   ├── 6a. Encoder Forward Pass
+   ├── 6a. Nougat path (nougat_engine.zig)
    │   ├── Create input tensor
    │   ├── Run encoder model
    │   └── Get encoder_hidden_states
    │
-   ├── 6b. Autoregressive Decoding (loop)
+   ├── 6b. Nougat autoregressive decoding (loop)
    │   ├── Prepare decoder input (token IDs)
    │   ├── Run decoder model
    │   ├── Get logits
@@ -118,7 +122,19 @@ src/
    │   └── Repeat until EOS or max_tokens
    │
    ▼
-7. Token Decoding (tokenizer.zig)
+7. PaddleOCR path (paddleocr_engine.zig)
+   ├── Run RapidOCR with ONNX det/rec models
+   ├── Apply confidence filter
+   └── Return recognized lines
+   │
+   ▼
+8. Hybrid decision (pdf2md.zig)
+   ├── Try PaddleOCR first
+   ├── Heuristic quality check
+   └── Fallback to Nougat if needed
+   │
+   ▼
+9. Token Decoding (tokenizer.zig; Nougat only)
    ├── Load tokenizer.json (50K vocab)
    ├── For each token ID:
    │   ├── Lookup token string
@@ -127,14 +143,14 @@ src/
    └── Return decoded text
    │
    ▼
-8. Markdown Output (pdf2md.zig)
+10. Markdown Output (pdf2md.zig)
    ├── Write "## Page N" header
    ├── Write decoded text
    ├── Write separator "---"
    └── Append to output file
    │
    ▼
-9. Cleanup
+11. Cleanup
    ├── Delete temp PNG files
    ├── Release ONNX resources
    └── Close output file
@@ -273,7 +289,46 @@ pub const SimpleTokenizer = struct {
 | Per-page processing | Memory efficient | ✅ Implemented |
 | GPU (CUDA/Metal) | 10x faster | ✅ Auto-detect |
 | INT8 quantization | 4x smaller | ✅ Available |
-| Parallel page processing | Linear scaling | ✅ Multi-engine (prep for threading) |
+| Parallel page processing | Linear scaling | ✅ Nougat mode |
+| PaddleOCR (alternative) | 14x smaller, faster | ✅ Available |
+
+### OCR Engine Comparison
+
+| Feature | Nougat | PaddleOCR |
+|---------|--------|-----------|
+| Model Size | 1.3 GB | 91 MB (14x smaller) |
+| Architecture | Encoder-Decoder Transformer | RapidOCR ONNX pipeline |
+| Best For | Scientific/academic papers | Printed text, forms, invoices |
+| Languages | English (primary) | 48+ languages |
+| Speed | Slower, variable | ~5-8s/page (CPU, includes Python pipeline) |
+| Accuracy | Excellent on math/formulas | Excellent on printed text |
+| GPU Support | ✅ CUDA, CoreML | ✅ CUDA, CoreML |
+
+**Use PaddleOCR for:**
+- General document OCR (forms, invoices, receipts)
+- Multi-language documents
+- Resource-constrained environments
+- Faster processing needs
+
+**Use Nougat for:**
+- Scientific papers with math/formulas
+- Academic documents
+- Complex layouts with equations
+
+**Switch engines:**
+```bash
+# Download PaddleOCR models (one-time)
+make paddleocr
+
+# Use PaddleOCR (10x smaller, faster)
+./pdf2md document.pdf output.md --ocr paddleocr
+
+# Use Hybrid (Paddle first, Nougat fallback)
+./pdf2md document.pdf output.md --ocr hybrid
+
+# Use Nougat (default, better for academic papers)
+./pdf2md document.pdf output.md --ocr nougat
+```
 
 ### GPU Support Status
 
@@ -387,5 +442,13 @@ pub const PageFilter = union(enum) {
 | Tokenization | Custom Zig | BPE decoding |
 | Image Loading | Python/PIL (temp) | PNG → bytes |
 | Build | Zig 0.13+ | Compilation |
+| Paddle runtime | Python + rapidocr-onnxruntime | Paddle OCR pipeline |
+
+**Models:**
+| Model | Size | Source |
+|-------|------|--------|
+| Nougat Base | 1.3 GB | `make model` |
+| Nougat INT8 | 350 MB | `make quantize` |
+| PaddleOCR | 91 MB | `make paddleocr` |
 
 Total runtime deps: `poppler`, `onnxruntime` (~20MB installed)

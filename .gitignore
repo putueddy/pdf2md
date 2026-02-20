@@ -12,6 +12,7 @@ pdf2md
 .deps/
 
 # Model files (large binaries)
+models/
 models/**/*.onnx
 models/**/*.bin
 models/**/*.safetensors

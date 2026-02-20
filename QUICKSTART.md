@@ -26,28 +26,36 @@ git clone <repository>
 cd pdf2md
 
 # Build
-./scripts/build.sh
-# OR manually:
-cd src/ml
-gcc -c -I/opt/homebrew/Cellar/onnxruntime/1.24.2/include ort_wrapper.c -o ort_wrapper.o
-cd ../..
-zig build-exe src/pdf2md.zig src/ml/ort_wrapper.o \
-  -femit-bin=pdf2md -L/opt/homebrew/lib -lonnxruntime -O ReleaseFast
+make build
+cp zig-out/bin/pdf2md ./pdf2md
 ```
 
-### 3. Download Model (~1.4GB)
+### 3. Download Models
 
 ```bash
+# Nougat
 ./scripts/export-nougat.sh
+
+# PaddleOCR
+./scripts/download-paddleocr.sh
+
+# Paddle runtime
+python3 -m pip install --user rapidocr-onnxruntime
 ```
 
-This downloads Facebook's Nougat model and converts it to ONNX format.
+This sets up Nougat + PaddleOCR + Hybrid support.
 
 ### 4. Convert Your First PDF
 
 ```bash
 # Convert entire document
 ./pdf2md your-document.pdf output.md
+
+# PaddleOCR mode
+./pdf2md your-document.pdf output.md --ocr paddleocr
+
+# Hybrid mode (Paddle first, Nougat fallback)
+./pdf2md your-document.pdf output.md --ocr hybrid
 
 # Or test with a single page (faster)
 ./pdf2md your-document.pdf output.md --page 1 --max-tokens 100
@@ -77,14 +85,14 @@ This downloads Facebook's Nougat model and converts it to ONNX format.
 ### Quality vs Speed
 
 ```bash
-# High quality (slower, more accurate)
-./pdf2md doc.pdf out.md --dpi 300 --max-tokens 512
+# High quality + robust
+./pdf2md doc.pdf out.md --ocr hybrid
 
-# Fast preview (lower quality)
-./pdf2md doc.pdf out.md --dpi 150 --max-tokens 100
+# Fast practical OCR
+./pdf2md doc.pdf out.md --ocr paddleocr
 
-# Default (good balance)
-./pdf2md doc.pdf out.md  # 200 DPI, 512 tokens
+# Nougat only (slow fallback style)
+./pdf2md doc.pdf out.md --ocr nougat
 ```
 
 ### Batch Processing
@@ -141,10 +149,16 @@ brew install onnxruntime
 ```bash
 # Download models
 ./scripts/export-nougat.sh
+./scripts/download-paddleocr.sh
 
 # Verify models exist
 ls -lh models/nougat-onnx/
 # Should show: encoder_model.onnx, decoder_model.onnx, tokenizer.json
+```
+
+### "rapidocr_onnxruntime module not found"
+```bash
+python3 -m pip install --user rapidocr-onnxruntime
 ```
 
 ### "Out of memory"
@@ -159,7 +173,8 @@ ls -lh models/nougat-onnx/
 ```bash
 # Clean and rebuild
 rm -f pdf2md src/ml/ort_wrapper.o
-./scripts/build.sh
+make build
+cp zig-out/bin/pdf2md ./pdf2md
 
 # Or manually with debug info
 zig build-exe src/pdf2md.zig src/ml/ort_wrapper.o \
@@ -236,4 +251,5 @@ cat test-output.md
 - Use `--append` to build up output incrementally
 - Test with `--max-tokens 50` before processing full documents
 - Check output quality on page 1 first: `./pdf2md doc.pdf p1.md --page 1`
-- For scanned documents with tables, use `--max-tokens 512` for better accuracy
+- For general business docs, start with `--ocr hybrid`
+- For fastest readable OCR, use `--ocr paddleocr`

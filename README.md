@@ -1,15 +1,16 @@
 # PDF2MD 📄➡️📝
 
-Convert scanned PDF documents to Markdown using AI (Pure Zig + ONNX Runtime + Nougat)
+Convert scanned PDF documents to Markdown using AI (Pure Zig + ONNX Runtime + Nougat + PaddleOCR/RapidOCR)
 
 ## Features
 
 - 🖼️ **Scanned PDF Support** - Works with image-based PDFs (no text layer needed)
-- 🧠 **AI-Powered** - Uses Facebook's Nougat model for accurate OCR
+- 🧠 **Multiple OCR Engines** - Nougat, PaddleOCR, and Hybrid mode
 - ⚡ **Fast** - Pure Zig implementation with ONNX Runtime for ML inference
 - 📊 **Preserves Structure** - Maintains headings, tables, and formatting
 - 🔧 **Local Processing** - No cloud API required, runs entirely offline
 - 📄 **Page Selection** - Process specific pages or ranges
+- 🔀 **Hybrid OCR** - PaddleOCR first, fallback to Nougat on low-quality pages
 
 ## Prerequisites
 
@@ -41,6 +42,14 @@ brew install zig
 # Or download from https://ziglang.org/download/
 ```
 
+### Optional Python dependency (for PaddleOCR/Hybrid)
+
+Install once:
+
+```bash
+python3 -m pip install --user rapidocr-onnxruntime
+```
+
 ## Installation
 
 ### 1. Clone Repository
@@ -53,25 +62,21 @@ cd pdf2md
 ### 2. Build
 
 ```bash
-# Compile C wrapper and Zig binary
-cd src/ml
-gcc -c -I/opt/homebrew/Cellar/onnxruntime/1.24.2/include ort_wrapper.c -o ort_wrapper.o
-cd ../..
-
-zig build-exe src/pdf2md.zig src/ml/ort_wrapper.o \
-  -femit-bin=pdf2md \
-  -L/opt/homebrew/lib \
-  -lonnxruntime \
-  -O ReleaseFast
+make build
+cp zig-out/bin/pdf2md ./pdf2md
 ```
 
-### 3. Download Model
+### 3. Download Models
 
 ```bash
+# Nougat models
 ./scripts/export-nougat.sh
+
+# PaddleOCR ONNX models
+./scripts/download-paddleocr.sh
 ```
 
-Models will be saved to `models/nougat-onnx/` directory (~1.4GB).
+Models are saved under `models/nougat-onnx/` and `models/paddleocr-onnx/`.
 
 ## Usage
 
@@ -80,6 +85,12 @@ Models will be saved to `models/nougat-onnx/` directory (~1.4GB).
 ```bash
 # Convert entire PDF
 ./pdf2md document.pdf output.md
+
+# Use PaddleOCR engine
+./pdf2md document.pdf output.md --ocr paddleocr
+
+# Use Hybrid mode (PaddleOCR first, fallback to Nougat)
+./pdf2md document.pdf output.md --ocr hybrid
 
 # Process specific page
 ./pdf2md document.pdf output.md --page 5
@@ -108,13 +119,17 @@ Options:
   --pages N,M,...    Process specific pages (comma-separated)
   --pages N-M        Process page range N to M (inclusive)
   --append           Append to output file instead of overwriting
+  --models DIR       Use models from DIR (Nougat path)
+  --ocr MODEL        OCR model: nougat|paddleocr|hybrid
+  --jobs N, -j N     Parallel workers (Nougat mode)
 
 Examples:
-  ./pdf2md doc.pdf output.md                    # All pages
-  ./pdf2md doc.pdf output.md --page 5           # Page 5 only
-  ./pdf2md doc.pdf output.md --pages 1,3,5      # Pages 1, 3, 5
-  ./pdf2md doc.pdf output.md --pages 1-5        # Pages 1-5
-  ./pdf2md doc.pdf output.md --append --page 6  # Append page 6
+  ./pdf2md doc.pdf output.md                          # Nougat (default)
+  ./pdf2md doc.pdf output.md --ocr paddleocr          # PaddleOCR
+  ./pdf2md doc.pdf output.md --ocr hybrid             # Hybrid mode
+  ./pdf2md doc.pdf output.md --page 5                 # Page 5 only
+  ./pdf2md doc.pdf output.md --pages 1,3,5            # Pages 1, 3, 5
+  ./pdf2md doc.pdf output.md --append --page 6        # Append page 6
 ```
 
 ## Project Structure
@@ -127,16 +142,18 @@ pdf2md/
 │   ├── pdf2md.zig           # Main entry point
 │   ├── ml/
 │   │   ├── nougat_engine.zig       # Core inference engine
+│   │   ├── paddleocr_engine.zig     # PaddleOCR via RapidOCR (Python)
 │   │   ├── onnx_runtime_c_wrapper.zig  # ONNX C bindings
 │   │   ├── tokenizer.zig           # BPE tokenizer (50K vocab)
 │   │   └── ort_wrapper.c           # C wrapper for ONNX Runtime
 │   └── image/
 │       └── ml_preprocess.zig       # Image preprocessing
 ├── models/
-│   └── nougat-onnx/          # Model files (~1.4GB)
+│   ├── nougat-onnx/          # Nougat model files (~1.4GB)
 │       ├── encoder_model.onnx
 │       ├── decoder_model.onnx
 │       └── tokenizer.json
+│   └── paddleocr-onnx/       # PaddleOCR model files (~91MB)
 ├── scripts/
 │   ├── export-nougat.sh      # Model export script
 │   ├── download-model.sh
@@ -150,10 +167,12 @@ pdf2md/
 ## How It Works
 
 ```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
-│  Scanned    │───▶│  PDF → Image │───▶│   ONNX/Nougat│───▶│   Markdown   │
-│    PDF      │    │  (Poppler)   │    │   Inference  │    │   Output     │
-└─────────────┘    └──────────────┘    └─────────────┘    └──────────────┘
+┌─────────────┐    ┌──────────────┐    ┌──────────────────────┐    ┌──────────────┐
+│  Scanned    │───▶│  PDF → Image │───▶│ OCR Engine            │───▶│   Markdown   │
+│    PDF      │    │  (Poppler)   │    │ - Nougat              │    │   Output     │
+└─────────────┘    └──────────────┘    │ - PaddleOCR/RapidOCR  │    └──────────────┘
+                                       │ - Hybrid fallback      │
+                                       └──────────────────────┘
       │                   │                   │                  │
       │              200 DPI               896×672 RGB      Clean formatting
       │               rendering            Encoder-Decoder
@@ -161,18 +180,20 @@ pdf2md/
 ```
 
 1. **PDF Parser** (Poppler): Renders PDF pages to PNG images
-2. **Image Preprocessing**: Resizes to 896×672, normalizes pixels
-3. **ONNX Inference**: Encoder → visual features → Decoder → token IDs
-4. **Tokenizer**: Decodes token IDs to text using BPE vocabulary
-5. **Markdown Output**: Formatted with page separators
+2. **Engine Selection**: Nougat, PaddleOCR, or Hybrid
+3. **Inference**:
+   - Nougat: ONNX encoder-decoder + BPE tokenizer
+   - PaddleOCR: RapidOCR ONNX pipeline (det + rec + postprocess)
+4. **Hybrid Heuristic**: fallback to Nougat on low-quality PaddleOCR output
+5. **Markdown Output**: formatted with page separators
 
 ## Performance
 
-| Pages | DPI | Time | Memory |
-|-------|-----|------|--------|
-| 1 | 200 | ~5s | 2GB |
-| 10 | 200 | ~60s | 2.5GB |
-| 12 | 200 | ~75s | 3GB |
+| Mode | Typical CPU speed |
+|------|-------------------|
+| PaddleOCR | ~5-8s/page |
+| Hybrid | ~6-10s/page (depends on fallback) |
+| Nougat | much slower but useful fallback for poor OCR pages |
 
 *On Apple M3 with 16GB RAM*
 
@@ -209,6 +230,12 @@ export DYLD_LIBRARY_PATH=/opt/homebrew/lib:$DYLD_LIBRARY_PATH
 ### "Model files not found"
 ```bash
 ./scripts/export-nougat.sh
+./scripts/download-paddleocr.sh
+```
+
+### "rapidocr_onnxruntime module not found"
+```bash
+python3 -m pip install --user rapidocr-onnxruntime
 ```
 
 ### Out of Memory

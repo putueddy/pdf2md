@@ -1,8 +1,15 @@
 const std = @import("std");
 const nougat = @import("ml/nougat_engine.zig");
+const paddleocr = @import("ml/paddleocr_engine.zig");
 const thread_pool = @import("ml/thread_pool.zig");
 
 const PageFilter = thread_pool.PageFilter;
+
+const OCRModel = enum {
+    nougat,
+    paddleocr,
+    hybrid,
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -25,6 +32,7 @@ pub fn main() !void {
             \\  --pages N-M        Process page range N to M (inclusive)
             \\  --append           Append to output file instead of overwriting
             \\  --models DIR       Use models from DIR (default: models/nougat-onnx)
+            \\  --ocr MODEL        OCR model: nougat|paddleocr|hybrid (default: nougat)
             \\  --jobs N, -j N     Number of parallel workers (default: 1, use 0 for auto)
             \\
             \\Examples:
@@ -36,9 +44,11 @@ pub fn main() !void {
             \\  {s} doc.pdf output.md --pages 1-5               # Process pages 1-5
             \\  {s} doc.pdf output.md --append --page 6         # Append page 6 to existing file
             \\  {s} doc.pdf output.md --models models/nougat-onnx-int8  # Use INT8 quantized models
+            \\  {s} doc.pdf output.md --ocr paddleocr                   # Use PaddleOCR (fast, practical OCR)
+            \\  {s} doc.pdf output.md --ocr hybrid                      # PaddleOCR first, fallback to Nougat
             \\
         ;
-        std.debug.print(help_msg, .{ args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0] });
+        std.debug.print(help_msg, .{ args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0] });
         return error.MissingArguments;
     }
 
@@ -51,6 +61,7 @@ pub fn main() !void {
     var page_filter = PageFilter{ .all = {} };
     var append_mode = false;
     var model_dir: []const u8 = "models/nougat-onnx";
+    var ocr_model = OCRModel.nougat;
     var num_jobs: usize = 1; // Default to sequential processing
     var i: usize = 2;
 
@@ -120,15 +131,18 @@ pub fn main() !void {
                 num_jobs = std.Thread.getCpuCount() catch 4;
             }
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--ocr") and i + 1 < args.len) {
+            if (std.mem.eql(u8, args[i + 1], "paddleocr")) {
+                ocr_model = OCRModel.paddleocr;
+            } else if (std.mem.eql(u8, args[i + 1], "hybrid")) {
+                ocr_model = OCRModel.hybrid;
+            } else {
+                ocr_model = OCRModel.nougat;
+            }
+            i += 1;
         }
     }
 
-    const encoder_path = try std.fs.path.join(allocator, &.{ model_dir, "encoder_model.onnx" });
-    defer allocator.free(encoder_path);
-    const decoder_path = try std.fs.path.join(allocator, &.{ model_dir, "decoder_model.onnx" });
-    defer allocator.free(decoder_path);
-    const tokenizer_path = try std.fs.path.join(allocator, &.{ model_dir, "tokenizer.json" });
-    defer allocator.free(tokenizer_path);
     const temp_dir = ".tmp/pdf2md";
 
     std.debug.print("PDF to Markdown Converter\n", .{});
@@ -140,22 +154,49 @@ pub fn main() !void {
         return error.FileNotFound;
     };
 
-    _ = std.fs.cwd().openFile(encoder_path, .{}) catch {
-        std.debug.print("Error: Encoder model not found: {s}\n", .{encoder_path});
-        std.debug.print("Run: ./scripts/export-nougat.sh\n", .{});
-        return error.FileNotFound;
-    };
-
-    // Initialize engine
+    // Initialize engine based on OCR model selection
     std.debug.print("Loading models...\n", .{});
     var timer = try std.time.Timer.start();
 
-    var engine = nougat.NougatEngine.init(allocator, encoder_path, decoder_path, tokenizer_path, max_tokens) catch |err| {
-        std.debug.print("Error: Failed to initialize engine: {s}\n", .{@errorName(err)});
-        return err;
-    };
+    // Use appropriate OCR engine
+    var engine_nougat: ?nougat.NougatEngine = null;
+    var engine_paddleocr: ?paddleocr.PaddleOCREngine = null;
+
+    const encoder_path = try std.fs.path.join(allocator, &.{ model_dir, "encoder_model.onnx" });
+    defer allocator.free(encoder_path);
+    const decoder_path = try std.fs.path.join(allocator, &.{ model_dir, "decoder_model.onnx" });
+    defer allocator.free(decoder_path);
+    const tokenizer_path = try std.fs.path.join(allocator, &.{ model_dir, "tokenizer.json" });
+    defer allocator.free(tokenizer_path);
+
+    const det_path = "models/paddleocr-onnx/detection/v5/det.onnx";
+    const rec_path = "models/paddleocr-onnx/languages/english/rec.onnx";
+    const dict_path = "models/paddleocr-onnx/languages/english/dict.txt";
+
+    if (ocr_model == .nougat or ocr_model == .hybrid) {
+        _ = std.fs.cwd().openFile(encoder_path, .{}) catch {
+            std.debug.print("Error: Encoder model not found: {s}\n", .{encoder_path});
+            std.debug.print("Run: ./scripts/export-nougat.sh\n", .{});
+            return error.FileNotFound;
+        };
+
+        engine_nougat = try nougat.NougatEngine.init(allocator, encoder_path, decoder_path, tokenizer_path, max_tokens);
+    }
+
+    if (ocr_model == .paddleocr or ocr_model == .hybrid) {
+        _ = std.fs.cwd().openFile(det_path, .{}) catch {
+            std.debug.print("Error: PaddleOCR detection model not found: {s}\n", .{det_path});
+            std.debug.print("Run: python3 -m pip install --user rapidocr-onnxruntime\n", .{});
+            std.debug.print("Then: ./scripts/download-paddleocr.sh\n", .{});
+            return error.FileNotFound;
+        };
+
+        engine_paddleocr = try paddleocr.PaddleOCREngine.init(allocator, det_path, rec_path, dict_path);
+    }
+
     defer {
-        engine.deinit();
+        if (engine_nougat) |*e| e.deinit();
+        if (engine_paddleocr) |*e| e.deinit();
         // Clean up list allocation if needed
         switch (page_filter) {
             .list => |list| allocator.free(list),
@@ -288,8 +329,8 @@ pub fn main() !void {
     var processed: u32 = 0;
     timer.reset();
 
-    // Use parallel processing if num_jobs > 1
-    if (num_jobs > 1) {
+    // Use parallel processing for Nougat only
+    if (num_jobs > 1 and ocr_model == .nougat) {
         std.debug.print("Processing pages with {d} parallel workers...\n", .{num_jobs});
 
         // Create page info array for thread pool
@@ -307,7 +348,6 @@ pub fn main() !void {
             };
         }
 
-        // Process in parallel
         var parallel_results = try thread_pool.processPagesParallel(
             allocator,
             @ptrCast(pool_pages),
@@ -348,6 +388,10 @@ pub fn main() !void {
             std.fs.cwd().deleteFile(page_path) catch {};
         }
     } else {
+        if (num_jobs > 1 and ocr_model != .nougat) {
+            std.debug.print("Warning: Parallel processing only supported for Nougat model\n", .{});
+            std.debug.print("Falling back to sequential processing...\n", .{});
+        }
         // Sequential processing
         for (page_files[0..idx]) |page_info| {
             // Check if this page should be processed based on filter
@@ -378,9 +422,35 @@ pub fn main() !void {
             // Progress indicator
             std.debug.print("  [{d}] ", .{page_info.num});
 
-            const text = engine.processImage(page_path) catch |err| {
-                std.debug.print("Failed ({s})\n", .{@errorName(err)});
-                continue;
+            const text = blk: {
+                switch (ocr_model) {
+                    .nougat => {
+                        break :blk engine_nougat.?.processImage(page_path) catch |err| {
+                            std.debug.print("Failed ({s})\n", .{@errorName(err)});
+                            continue;
+                        };
+                    },
+                    .paddleocr => {
+                        break :blk engine_paddleocr.?.processImage(page_path) catch |err| {
+                            std.debug.print("Failed ({s})\n", .{@errorName(err)});
+                            continue;
+                        };
+                    },
+                    .hybrid => {
+                        const paddle_text = engine_paddleocr.?.processImage(page_path) catch null;
+                        if (paddle_text) |pt| {
+                            if (!shouldFallbackToNougat(pt)) {
+                                break :blk pt;
+                            }
+                            allocator.free(pt);
+                        }
+
+                        break :blk engine_nougat.?.processImage(page_path) catch |err| {
+                            std.debug.print("Failed ({s})\n", .{@errorName(err)});
+                            continue;
+                        };
+                    },
+                }
             };
             defer allocator.free(text);
 
@@ -430,6 +500,42 @@ pub fn main() !void {
 
     // Cleanup
     std.fs.cwd().deleteTree(temp_dir) catch {};
+}
+
+fn shouldFallbackToNougat(text: []const u8) bool {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == 0) return true;
+
+    var letters: usize = 0;
+    var digits: usize = 0;
+    var spaces: usize = 0;
+    var suspicious: usize = 0;
+
+    for (trimmed) |c| {
+        if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')) {
+            letters += 1;
+        } else if (c >= '0' and c <= '9') {
+            digits += 1;
+        } else if (c == ' ' or c == '\n' or c == '\t') {
+            spaces += 1;
+        } else if (c < 32 or c > 126) {
+            suspicious += 1;
+        }
+    }
+
+    if (std.mem.indexOf(u8, trimmed, "EMPY") != null) return true;
+
+    // Tuned on SOP Whistleblowing samples:
+    // very short, fragmented Paddle text tends to be worse than Nougat.
+    if (trimmed.len < 50 and letters < 35) return true;
+
+    if (letters < 20 and trimmed.len > 60) return true;
+
+    const content = letters + digits + spaces;
+    if (content == 0) return true;
+    if (suspicious * 4 > trimmed.len) return true; // >25%
+
+    return false;
 }
 
 fn extractPageNumber(filename: []const u8) !u32 {
