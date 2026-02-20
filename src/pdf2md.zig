@@ -1,12 +1,8 @@
 const std = @import("std");
 const nougat = @import("ml/nougat_engine.zig");
+const thread_pool = @import("ml/thread_pool.zig");
 
-const PageFilter = union(enum) {
-    all,
-    single: u32,
-    list: []const u32,
-    range: struct { start: u32, end: u32 },
-};
+const PageFilter = thread_pool.PageFilter;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -28,15 +24,20 @@ pub fn main() !void {
             \\n  --pages N,M,...    Process specific pages (comma-separated)
             \\n  --pages N-M        Process page range N to M (inclusive)
             \\n  --append           Append to output file instead of overwriting
+            \\n  --models DIR       Use models from DIR (default: models/nougat-onnx)
+            \\n  --jobs N, -j N     Number of parallel workers (default: 1, use 0 for auto)
             \\n
             \\nExamples:
-            \\n  {s} doc.pdf output.md                    # Process all pages
-            \\n  {s} doc.pdf output.md --page 5           # Process only page 5
-            \\n  {s} doc.pdf output.md --pages 1,3,5      # Process pages 1, 3, and 5
-            \\n  {s} doc.pdf output.md --pages 1-5        # Process pages 1-5
-            \\n  {s} doc.pdf output.md --append --page 6  # Append page 6 to existing file
+            \\n  {s} doc.pdf output.md                           # Process all pages (sequential)
+            \\n  {s} doc.pdf output.md -j 4                      # Process with 4 parallel workers
+            \\n  {s} doc.pdf output.md --jobs 0                  # Auto-detect CPU cores
+            \\n  {s} doc.pdf output.md --page 5                  # Process only page 5
+            \\n  {s} doc.pdf output.md --pages 1,3,5             # Process pages 1, 3, and 5
+            \\n  {s} doc.pdf output.md --pages 1-5               # Process pages 1-5
+            \\n  {s} doc.pdf output.md --append --page 6         # Append page 6 to existing file
+            \\n  {s} doc.pdf output.md --models models/nougat-onnx-int8  # Use INT8 quantized models
             \\n
-        , .{ args[0], args[0], args[0], args[0], args[0], args[0] });
+        , .{ args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0] });
         return error.MissingArguments;
     }
 
@@ -48,6 +49,8 @@ pub fn main() !void {
     var dpi: u32 = 200;
     var page_filter = PageFilter{ .all = {} };
     var append_mode = false;
+    var model_dir: []const u8 = "models/nougat-onnx";
+    var num_jobs: usize = 1; // Default to sequential processing
     var i: usize = 2;
 
     while (i < args.len) : (i += 1) {
@@ -106,12 +109,25 @@ pub fn main() !void {
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--append")) {
             append_mode = true;
+        } else if (std.mem.eql(u8, args[i], "--models") and i + 1 < args.len) {
+            model_dir = args[i + 1];
+            i += 1;
+        } else if ((std.mem.eql(u8, args[i], "--jobs") or std.mem.eql(u8, args[i], "-j")) and i + 1 < args.len) {
+            num_jobs = std.fmt.parseUnsigned(usize, args[i + 1], 10) catch 1;
+            // Auto-detect CPU cores if 0
+            if (num_jobs == 0) {
+                num_jobs = std.Thread.getCpuCount() catch 4;
+            }
+            i += 1;
         }
     }
 
-    const encoder_path = "models/nougat-onnx/encoder_model.onnx";
-    const decoder_path = "models/nougat-onnx/decoder_model.onnx";
-    const tokenizer_path = "models/nougat-onnx/tokenizer.json";
+    const encoder_path = try std.fs.path.join(allocator, &.{ model_dir, "encoder_model.onnx" });
+    defer allocator.free(encoder_path);
+    const decoder_path = try std.fs.path.join(allocator, &.{ model_dir, "decoder_model.onnx" });
+    defer allocator.free(decoder_path);
+    const tokenizer_path = try std.fs.path.join(allocator, &.{ model_dir, "tokenizer.json" });
+    defer allocator.free(tokenizer_path);
     const temp_dir = ".tmp/pdf2md";
 
     std.debug.print("PDF to Markdown Converter\n", .{});
@@ -271,52 +287,114 @@ pub fn main() !void {
     var processed: u32 = 0;
     timer.reset();
 
-    for (page_files[0..idx]) |page_info| {
-        // Check if this page should be processed based on filter
-        const should_process = switch (page_filter) {
-            .all => true,
-            .single => |n| page_info.num == n,
-            .list => |list| blk: {
-                for (list) |n| {
-                    if (n == page_info.num) break :blk true;
-                }
-                break :blk false;
-            },
-            .range => |r| page_info.num >= r.start and page_info.num <= r.end,
-        };
+    // Use parallel processing if num_jobs > 1
+    if (num_jobs > 1) {
+        std.debug.print("Processing pages with {d} parallel workers...\n", .{num_jobs});
 
-        if (!should_process) {
-            // Clean up skipped page
-            const page_path = try std.fs.path.join(allocator, &.{ temp_dir, page_info.name });
-            defer allocator.free(page_path);
-            std.fs.cwd().deleteFile(page_path) catch {};
-            continue;
+        // Create page info array for thread pool
+        const PoolPageInfo = struct {
+            num: u32,
+            name: []const u8,
+        };
+        var pool_pages = try allocator.alloc(PoolPageInfo, idx);
+        defer allocator.free(pool_pages);
+
+        for (page_files[0..idx], 0..) |page_info, page_idx| {
+            pool_pages[page_idx] = .{
+                .num = page_info.num,
+                .name = page_info.name,
+            };
         }
 
-        processed += 1;
-        const page_path = try std.fs.path.join(allocator, &.{ temp_dir, page_info.name });
-        defer allocator.free(page_path);
+        // Process in parallel
+        var parallel_results = try thread_pool.processPagesParallel(
+            allocator,
+            @ptrCast(pool_pages),
+            page_filter,
+            encoder_path,
+            decoder_path,
+            tokenizer_path,
+            max_tokens,
+            num_jobs,
+            temp_dir,
+        );
+        defer parallel_results.deinit(allocator);
 
-        // Progress indicator
-        std.debug.print("  [{d}] ", .{page_info.num});
+        processed = parallel_results.processed;
 
-        const text = engine.processImage(page_path) catch |err| {
-            std.debug.print("Failed ({s})\n", .{@errorName(err)});
-            continue;
-        };
-        defer allocator.free(text);
+        // Write results in order
+        for (parallel_results.results) |page_result| {
+            if (!page_result.success) {
+                std.debug.print("  [{d}] Failed ({s})\n", .{ page_result.page_num, page_result.error_msg orelse "unknown" });
+                continue;
+            }
 
-        try out_file.writeAll("## Page ");
-        const page_num_str = try std.fmt.allocPrint(allocator, "{d}\n\n", .{page_info.num});
-        defer allocator.free(page_num_str);
-        try out_file.writeAll(page_num_str);
-        try out_file.writeAll(text);
-        try out_file.writeAll("\n\n---\n\n");
+            try out_file.writeAll("## Page ");
+            const page_num_str = try std.fmt.allocPrint(allocator, "{d}\n\n", .{page_result.page_num});
+            defer allocator.free(page_num_str);
+            try out_file.writeAll(page_num_str);
+            try out_file.writeAll(page_result.text);
+            try out_file.writeAll("\n\n---\n\n");
 
-        total_chars += text.len;
-        std.debug.print("{d} chars\n", .{text.len});
+            total_chars += page_result.text.len;
+            std.debug.print("  [{d}] {d} chars\n", .{ page_result.page_num, page_result.text.len });
 
-        std.fs.cwd().deleteFile(page_path) catch {};
+            // Delete processed page file
+            const page_filename = try std.fmt.allocPrint(allocator, "page-{d:0>2}.png", .{page_result.page_num});
+            defer allocator.free(page_filename);
+            const page_path = try std.fs.path.join(allocator, &.{ temp_dir, page_filename });
+            defer allocator.free(page_path);
+            std.fs.cwd().deleteFile(page_path) catch {};
+        }
+    } else {
+        // Sequential processing
+        for (page_files[0..idx]) |page_info| {
+            // Check if this page should be processed based on filter
+            const should_process = switch (page_filter) {
+                .all => true,
+                .single => |n| page_info.num == n,
+                .list => |list| blk: {
+                    for (list) |n| {
+                        if (n == page_info.num) break :blk true;
+                    }
+                    break :blk false;
+                },
+                .range => |r| page_info.num >= r.start and page_info.num <= r.end,
+            };
+
+            if (!should_process) {
+                // Clean up skipped page
+                const page_path = try std.fs.path.join(allocator, &.{ temp_dir, page_info.name });
+                defer allocator.free(page_path);
+                std.fs.cwd().deleteFile(page_path) catch {};
+                continue;
+            }
+
+            processed += 1;
+            const page_path = try std.fs.path.join(allocator, &.{ temp_dir, page_info.name });
+            defer allocator.free(page_path);
+
+            // Progress indicator
+            std.debug.print("  [{d}] ", .{page_info.num});
+
+            const text = engine.processImage(page_path) catch |err| {
+                std.debug.print("Failed ({s})\n", .{@errorName(err)});
+                continue;
+            };
+            defer allocator.free(text);
+
+            try out_file.writeAll("## Page ");
+            const page_num_str = try std.fmt.allocPrint(allocator, "{d}\n\n", .{page_info.num});
+            defer allocator.free(page_num_str);
+            try out_file.writeAll(page_num_str);
+            try out_file.writeAll(text);
+            try out_file.writeAll("\n\n---\n\n");
+
+            total_chars += text.len;
+            std.debug.print("{d} chars\n", .{text.len});
+
+            std.fs.cwd().deleteFile(page_path) catch {};
+        }
     }
 
     const process_time = timer.read() / std.time.ns_per_ms;

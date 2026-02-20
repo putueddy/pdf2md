@@ -17,6 +17,7 @@ help:
 	@echo "  make build              - Build the project"
 	@echo "  make build-coreml       - Build with CoreML-enabled ONNX"
 	@echo "  make onnx-coreml        - Build ONNX Runtime with CoreML"
+	@echo "  make quantize           - Quantize models to INT8 (4x smaller)"
 	@echo "  make test               - Run tests"
 	@echo "  make run FILE=x         - Run with file"
 	@echo "  make model              - Download AI model"
@@ -83,6 +84,10 @@ run: build
 
 model:
 	./scripts/download-model.sh
+
+quantize:
+	@echo "Quantizing ONNX models to INT8..."
+	./scripts/quantize-int8.sh
 
 clean:
 	rm -rf zig-cache zig-out .tmp
