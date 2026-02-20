@@ -1,0 +1,47 @@
+# Zig build artifacts
+zig-cache/
+.zig-cache/
+zig-out/
+build-*/
+*.exe
+*.obj
+*.o
+
+# Model files (large binaries)
+models/**/*.onnx
+models/**/*.bin
+models/**/*.safetensors
+models/**/*.pth
+models/**/*.ckpt
+models/**/*.h5
+models/**/*.pb
+
+# Temporary files
+.tmp/
+temp/
+*.tmp
+*.temp
+
+# Output files
+*.md
+!README.md
+!QUICKSTART.md
+!ARCHITECTURE.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python virtual environments
+.venv/
+venv/
+
+# Test outputs
+test_data/output/
