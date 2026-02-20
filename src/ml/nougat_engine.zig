@@ -21,6 +21,9 @@ pub const NougatEngine = struct {
         var env = try onnx.Environment.init(2); // WARNING level
         errdefer env.deinit();
 
+        // Detect and print GPU info
+        onnx.printGpuInfo();
+
         var enc = try onnx.Session.init(&env, encoder_path);
         errdefer enc.deinit();
 

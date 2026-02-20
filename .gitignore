@@ -7,6 +7,9 @@ build-*/
 *.obj
 *.o
 
+# Dependencies (can be rebuilt)
+.deps/
+
 # Model files (large binaries)
 models/**/*.onnx
 models/**/*.bin

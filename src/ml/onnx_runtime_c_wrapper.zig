@@ -6,19 +6,33 @@ pub const OrtSession = opaque {};
 pub const OrtValue = opaque {};
 pub const OrtMemoryInfo = opaque {};
 
+// GPU Provider enum
+pub const GpuProvider = enum(c_int) {
+    none = 0,
+    cuda = 1,
+    metal = 2,
+    coreml_available = 3,
+    coreml_active = 4,
+};
+
 // C wrapper extern declarations
 extern fn ort_init() c_int;
 extern fn ort_create_env(log_level: c_int, log_id: [*c]const u8) ?*OrtEnv;
 extern fn ort_release_env(env: ?*OrtEnv) void;
 extern fn ort_create_session(env: ?*OrtEnv, model_path: [*c]const u8) ?*OrtSession;
+extern fn ort_create_session_with_gpu(env: ?*OrtEnv, model_path: [*c]const u8, use_gpu: c_int) ?*OrtSession;
 extern fn ort_release_session(session: ?*OrtSession) void;
 extern fn ort_create_cpu_memory_info() ?*OrtMemoryInfo;
+extern fn ort_create_gpu_memory_info() ?*OrtMemoryInfo;
 extern fn ort_release_memory_info(info: ?*OrtMemoryInfo) void;
 extern fn ort_create_tensor(info: ?*OrtMemoryInfo, data: [*c]f32, data_len: usize, shape: [*c]i64, shape_len: usize) ?*OrtValue;
 extern fn ort_create_tensor_int64(info: ?*OrtMemoryInfo, data: [*c]i64, data_len: usize, shape: [*c]i64, shape_len: usize) ?*OrtValue;
 extern fn ort_release_value(value: ?*OrtValue) void;
 extern fn ort_run_session(session: ?*OrtSession, input_names: [*c]const [*c]const u8, inputs: [*c]?*OrtValue, input_count: usize, output_names: [*c]const [*c]const u8, outputs: [*c]?*OrtValue, output_count: usize) c_int;
 extern fn ort_get_tensor_data(value: ?*OrtValue, out_count: [*c]i64) [*c]f32;
+extern fn ort_get_gpu_provider() c_int;
+extern fn ort_get_gpu_provider_name() [*c]const u8;
+extern fn ort_synchronize() void;
 
 pub const OnnxError = error{
     ApiInitFailed,
@@ -26,6 +40,7 @@ pub const OnnxError = error{
     SessionCreateFailed,
     RunFailed,
     TensorCreateFailed,
+    GpuNotAvailable,
 };
 
 pub const Environment = struct {
@@ -46,25 +61,52 @@ pub const Session = struct {
     env: *Environment,
     session: *OrtSession,
     memory_info: *OrtMemoryInfo,
+    use_gpu: bool,
 
     pub fn init(env: *Environment, model_path: []const u8) !Session {
+        return initWithGpu(env, model_path, true);
+    }
+
+    pub fn initWithGpu(env: *Environment, model_path: []const u8, use_gpu: bool) !Session {
         const allocator = std.heap.page_allocator;
         const path_z = try allocator.dupeZ(u8, model_path);
         defer allocator.free(path_z);
 
-        const session = ort_create_session(env.env, path_z.ptr) orelse return error.SessionCreateFailed;
-        const memory_info = ort_create_cpu_memory_info() orelse return error.SessionCreateFailed;
+        const session = if (use_gpu)
+            ort_create_session_with_gpu(env.env, path_z.ptr, 1)
+        else
+            ort_create_session(env.env, path_z.ptr);
+
+        const session_ptr = session orelse return error.SessionCreateFailed;
+
+        // Try GPU memory info first if GPU is enabled
+        var memory_info = ort_create_gpu_memory_info();
+        if (memory_info == null) {
+            memory_info = ort_create_cpu_memory_info();
+        }
+        const mem_info_ptr = memory_info orelse return error.SessionCreateFailed;
+
+        // Check if GPU is actually being used
+        const gpu_provider = @as(GpuProvider, @enumFromInt(ort_get_gpu_provider()));
+        const actually_using_gpu = use_gpu and gpu_provider != .none;
 
         return Session{
             .env = env,
-            .session = session,
-            .memory_info = memory_info,
+            .session = session_ptr,
+            .memory_info = mem_info_ptr,
+            .use_gpu = actually_using_gpu,
         };
     }
 
     pub fn deinit(self: *Session) void {
         ort_release_memory_info(self.memory_info);
         ort_release_session(self.session);
+    }
+
+    pub fn synchronize(self: *Session) void {
+        if (self.use_gpu) {
+            ort_synchronize();
+        }
     }
 
     pub fn run(
@@ -168,4 +210,25 @@ pub const Value = struct {
 
 pub fn initialize() !void {
     if (ort_init() != 0) return error.ApiInitFailed;
+}
+
+pub fn getGpuProvider() GpuProvider {
+    return @as(GpuProvider, @enumFromInt(ort_get_gpu_provider()));
+}
+
+pub fn getGpuProviderName() []const u8 {
+    const name_ptr = ort_get_gpu_provider_name();
+    if (name_ptr == null) return "Unknown";
+    const len = std.mem.len(name_ptr);
+    return name_ptr[0..len];
+}
+
+pub fn isGpuAvailable() bool {
+    return getGpuProvider() != .none;
+}
+
+pub fn printGpuInfo() void {
+    const provider = getGpuProvider();
+    const name = getGpuProviderName();
+    std.debug.print("GPU Provider: {s} (code: {d})\n", .{ name, @intFromEnum(provider) });
 }

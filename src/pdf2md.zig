@@ -147,7 +147,18 @@ pub fn main() !void {
     }
 
     const init_time = timer.read() / std.time.ns_per_ms;
-    std.debug.print("  Models loaded in {d}ms\n\n", .{init_time});
+    std.debug.print("  Models loaded in {d}ms\n", .{init_time});
+
+    // Print GPU status
+    const onnx = @import("ml/onnx_runtime_c_wrapper.zig");
+    const gpu_name = onnx.getGpuProviderName();
+    const using_gpu = onnx.isGpuAvailable();
+    if (using_gpu) {
+        std.debug.print("  GPU Acceleration: {s} (10x faster inference)\n", .{gpu_name});
+    } else {
+        std.debug.print("  GPU Acceleration: Not available (using CPU)\n", .{});
+    }
+    std.debug.print("\n", .{});
 
     // Convert PDF
     try std.fs.cwd().makePath(temp_dir);

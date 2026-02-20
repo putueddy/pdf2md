@@ -4,28 +4,33 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // ONNX Runtime path configuration
+    const onnx_path_opt = b.option([]const u8, "onnx-path", "Path to ONNX Runtime installation (default: /opt/homebrew/opt/onnxruntime)");
+    const onnx_path = onnx_path_opt orelse "/opt/homebrew/opt/onnxruntime";
+    const onnx_include = b.pathJoin(&.{ onnx_path, "include" });
+    const onnx_lib = b.pathJoin(&.{ onnx_path, "lib" });
+
     // Main executable
     const exe = b.addExecutable(.{
         .name = "pdf2md",
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/pdf2md.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // Dependencies
-    const zml_dep = b.dependency("zml", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.addImport("zml", zml_dep.module("zml"));
+    // Add C wrapper object file
+    const ort_wrapper_o = b.path("src/ml/ort_wrapper.o");
+    exe.addObjectFile(ort_wrapper_o);
 
-    const zigimg_dep = b.dependency("zigimg", .{});
-    exe.root_module.addImport("zigimg", zigimg_dep.module("zigimg"));
+    // ONNX Runtime
+    exe.addIncludePath(.{ .cwd_relative = onnx_include });
+    exe.addLibraryPath(.{ .cwd_relative = onnx_lib });
+    exe.linkSystemLibrary("onnxruntime");
+    exe.linkLibC();
 
     // System libraries for PDF processing
     exe.linkSystemLibrary("poppler-glib");
     exe.linkSystemLibrary("gobject-2.0");
-    exe.linkLibC();
 
     b.installArtifact(exe);
 
@@ -42,10 +47,15 @@ pub fn build(b: *std.Build) void {
 
     // Tests
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/pdf2md.zig"),
         .target = target,
         .optimize = optimize,
     });
+    unit_tests.addObjectFile(ort_wrapper_o);
+    unit_tests.addIncludePath(.{ .cwd_relative = onnx_include });
+    unit_tests.addLibraryPath(.{ .cwd_relative = onnx_lib });
+    unit_tests.linkSystemLibrary("onnxruntime");
+    unit_tests.linkLibC();
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
@@ -58,6 +68,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    pdf_test_exe.addObjectFile(ort_wrapper_o);
+    pdf_test_exe.addIncludePath(.{ .cwd_relative = onnx_include });
+    pdf_test_exe.addLibraryPath(.{ .cwd_relative = onnx_lib });
+    pdf_test_exe.linkSystemLibrary("onnxruntime");
+    pdf_test_exe.linkLibC();
     b.installArtifact(pdf_test_exe);
 
     const pdf_test_run = b.addRunArtifact(pdf_test_exe);
@@ -75,10 +90,33 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    validate_exe.addObjectFile(ort_wrapper_o);
+    validate_exe.addIncludePath(.{ .cwd_relative = onnx_include });
+    validate_exe.addLibraryPath(.{ .cwd_relative = onnx_lib });
+    validate_exe.linkSystemLibrary("onnxruntime");
+    validate_exe.linkLibC();
     b.installArtifact(validate_exe);
 
     const validate_run = b.addRunArtifact(validate_exe);
     validate_run.step.dependOn(b.getInstallStep());
     const validate_step = b.step("validate-model", "Validate ONNX models");
     validate_step.dependOn(&validate_run.step);
+
+    // GPU/ONNX info step
+    const info_step = b.step("info", "Show build configuration");
+    const info_cmd = b.addSystemCommand(&.{
+        "echo",
+        "Build Configuration:",
+        "",
+        "ONNX Runtime Path: " ++ onnx_path,
+        "Include: " ++ onnx_include,
+        "Lib: " ++ onnx_lib,
+        "",
+        "To use custom ONNX Runtime (e.g., with CoreML):",
+        "  zig build -Donnx-path=/path/to/onnxruntime",
+        "",
+        "To build ONNX Runtime with CoreML support:",
+        "  ./scripts/build-onnx-coreml.sh",
+    });
+    info_step.dependOn(&info_cmd.step);
 }

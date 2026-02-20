@@ -271,9 +271,44 @@ pub const SimpleTokenizer = struct {
 | ONNX Graph Optimization | 1.5x faster | ✅ Level 99 |
 | 4-thread intra-op | Parallel encoding | ✅ Enabled |
 | Per-page processing | Memory efficient | ✅ Implemented |
-| GPU (CUDA/Metal) | 10x faster | 🚧 Future |
+| GPU (CUDA/Metal) | 10x faster | ✅ Auto-detect |
 | INT8 quantization | 2x smaller | 🚧 ONNX opt |
 | Parallel page processing | Linear scaling | 🚧 Thread pool |
+
+### GPU Support Status
+
+**NVIDIA (CUDA):** ✅ Detected automatically if `nvidia-smi` is available. Requires ONNX Runtime built with CUDA EP.
+
+**Apple Silicon (Metal/CoreML):** 🔧 Detection implemented but requires ONNX Runtime compiled with CoreML support. The Homebrew version does NOT include CoreML.
+
+#### Enabling CoreML on Apple Silicon (M1/M2/M3/M4)
+
+**Quick Build (30-60 minutes):**
+```bash
+# Step 1: Build ONNX Runtime with CoreML
+make onnx-coreml
+
+# Step 2: Build pdf2md with CoreML-enabled ONNX
+make build-coreml
+```
+
+**Manual Build:**
+```bash
+# Build ONNX Runtime from source
+./scripts/build-onnx-coreml.sh
+
+# Use custom ONNX Runtime
+make build ONNXRUNTIME_DIR=.deps/onnxruntime
+
+# Or with zig directly
+zig build -Donnx-path=.deps/onnxruntime
+```
+
+**Verify GPU is active:**
+```bash
+./pdf2md document.pdf output.md
+# Should show: "GPU Acceleration: CoreML (Metal/GPU) (10x faster)"
+```
 
 ## Extension Points
 
@@ -288,9 +323,9 @@ pub const ModelType = enum {
 
 // Alternative backends
 pub const Backend = enum {
-    onnx_cpu,      // Current
-    onnx_cuda,     // Future
-    onnx_metal,    // Future (Apple Silicon)
+    onnx_cpu,      // Fallback
+    onnx_cuda,     // Available (NVIDIA GPUs)
+    onnx_metal,    // Available (Apple Silicon)
 };
 
 // Page selection strategies
