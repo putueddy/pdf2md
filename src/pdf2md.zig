@@ -13,31 +13,32 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        std.debug.print(
-            \\nPDF to Markdown Converter (Pure Zig + ONNX Runtime)
-            \\nUsage: {s} <pdf-file> [output.md] [options]
-            \\n
-            \\nOptions:
-            \\n  --max-tokens N      Maximum tokens per page (default: 512)
-            \\n  --dpi N            DPI for PDF rendering (default: 200)
-            \\n  --page N           Process only page N
-            \\n  --pages N,M,...    Process specific pages (comma-separated)
-            \\n  --pages N-M        Process page range N to M (inclusive)
-            \\n  --append           Append to output file instead of overwriting
-            \\n  --models DIR       Use models from DIR (default: models/nougat-onnx)
-            \\n  --jobs N, -j N     Number of parallel workers (default: 1, use 0 for auto)
-            \\n
-            \\nExamples:
-            \\n  {s} doc.pdf output.md                           # Process all pages (sequential)
-            \\n  {s} doc.pdf output.md -j 4                      # Process with 4 parallel workers
-            \\n  {s} doc.pdf output.md --jobs 0                  # Auto-detect CPU cores
-            \\n  {s} doc.pdf output.md --page 5                  # Process only page 5
-            \\n  {s} doc.pdf output.md --pages 1,3,5             # Process pages 1, 3, and 5
-            \\n  {s} doc.pdf output.md --pages 1-5               # Process pages 1-5
-            \\n  {s} doc.pdf output.md --append --page 6         # Append page 6 to existing file
-            \\n  {s} doc.pdf output.md --models models/nougat-onnx-int8  # Use INT8 quantized models
-            \\n
-        , .{ args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0] });
+        const help_msg =
+            \\PDF to Markdown Converter (Pure Zig + ONNX Runtime)
+            \\Usage: {s} <pdf-file> [output.md] [options]
+            \\
+            \\Options:
+            \\  --max-tokens N      Maximum tokens per page (default: 512)
+            \\  --dpi N            DPI for PDF rendering (default: 200)
+            \\  --page N           Process only page N
+            \\  --pages N,M,...    Process specific pages (comma-separated)
+            \\  --pages N-M        Process page range N to M (inclusive)
+            \\  --append           Append to output file instead of overwriting
+            \\  --models DIR       Use models from DIR (default: models/nougat-onnx)
+            \\  --jobs N, -j N     Number of parallel workers (default: 1, use 0 for auto)
+            \\
+            \\Examples:
+            \\  {s} doc.pdf output.md                           # Process all pages (sequential)
+            \\  {s} doc.pdf output.md -j 4                      # Process with 4 parallel workers
+            \\  {s} doc.pdf output.md --jobs 0                  # Auto-detect CPU cores
+            \\  {s} doc.pdf output.md --page 5                  # Process only page 5
+            \\  {s} doc.pdf output.md --pages 1,3,5             # Process pages 1, 3, and 5
+            \\  {s} doc.pdf output.md --pages 1-5               # Process pages 1-5
+            \\  {s} doc.pdf output.md --append --page 6         # Append page 6 to existing file
+            \\  {s} doc.pdf output.md --models models/nougat-onnx-int8  # Use INT8 quantized models
+            \\
+        ;
+        std.debug.print(help_msg, .{ args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0], args[0] });
         return error.MissingArguments;
     }
 
